@@ -121,11 +121,7 @@ export function createSignalingClient(url: string): SignalingClient {
 
     ws.onerror = (event: Event) => {
       console.error('SignalingClient: WebSocket error', event);
-      if (connectReject !== null && !isConnected) {
-        connectReject(new Error('WebSocket connection error'));
-        connectReject = null;
-        connectResolve = null;
-      }
+      // Rejection is handled in onclose, which always fires after onerror
     };
   }
 
