@@ -310,6 +310,10 @@ describe('receiveFile', () => {
     const chunk = new ArrayBuffer(100);
     const totalSize = 100;
 
+    const createObjectURLSpy = vi.spyOn(URL, 'createObjectURL');
+    const revokeObjectURLSpy = vi.spyOn(URL, 'revokeObjectURL');
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click');
+
     const receivePromise = receiveFile(asChannel(channel), 'download.bin', totalSize, () => {});
 
     channel.triggerMessage(chunk);
@@ -318,5 +322,8 @@ describe('receiveFile', () => {
     const blob = await receivePromise;
     expect(blob).toBeInstanceOf(Blob);
     expect(blob.size).toBe(totalSize);
+    expect(createObjectURLSpy).toHaveBeenCalled();
+    expect(revokeObjectURLSpy).toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalled();
   });
 });

@@ -123,8 +123,15 @@ export async function receiveFile(
         return;
       }
 
-      chunks.push(data);
-      bytesReceived += data.byteLength;
+      const remaining = fileSize - bytesReceived;
+      if (data.byteLength > remaining) {
+        // Trim excess bytes to guarantee blob.size === fileSize
+        chunks.push(data.slice(0, remaining));
+        bytesReceived = fileSize;
+      } else {
+        chunks.push(data);
+        bytesReceived += data.byteLength;
+      }
 
       const progress = computeProgress(bytesReceived, fileSize, startTime);
       onProgress(progress);
