@@ -12,5 +12,11 @@ declare module 'lucide-react' {
 
   export const Monitor: LucideIcon;
   export const Smartphone: LucideIcon;
+  export const Copy: LucideIcon;
+  export const Camera: LucideIcon;
+  export const QrCode: LucideIcon;
+  export const X: LucideIcon;
+  export const ChevronRight: LucideIcon;
+  export const Check: LucideIcon;
   // Add other icons as needed
 }
