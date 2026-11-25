@@ -56,7 +56,7 @@ class MockRTCPeerConnection {
   }
 
   getStats(): Promise<RTCStatsReport> {
-    return Promise.resolve(new Map() as any);
+    return Promise.resolve(new Map() as unknown as RTCStatsReport);
   }
 
   dispatchEvent(_event: Event): boolean {
