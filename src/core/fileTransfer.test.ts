@@ -3,6 +3,7 @@ import {
   CHUNK_SIZE,
   BACKPRESSURE_THRESHOLD,
   sendFile,
+  receiveFile,
   type ProgressInfo,
   type TransferOptions,
 } from './fileTransfer';
@@ -23,11 +24,30 @@ function resolveNextBlobRead(buffer?: ArrayBuffer): void {
   }
 }
 
+// Mock URL.createObjectURL and revokeObjectURL for jsdom
+const mockObjectUrls = new Map<string, Blob>();
+let objectUrlCounter = 0;
+
+Object.defineProperty(globalThis, 'URL', {
+  value: {
+    createObjectURL: vi.fn((blob: Blob): string => {
+      const url = `blob:mock/${++objectUrlCounter}`;
+      mockObjectUrls.set(url, blob);
+      return url;
+    }),
+    revokeObjectURL: vi.fn((url: string): void => {
+      mockObjectUrls.delete(url);
+    }),
+  },
+  configurable: true,
+});
+
 class TestDataChannel {
   bufferedAmount = 0;
   binaryType: BinaryType = 'arraybuffer';
   onbufferedamountlow: ((event: Event) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
   sentBuffers: ArrayBuffer[] = [];
 
   send(data: ArrayBuffer): void {
@@ -36,6 +56,10 @@ class TestDataChannel {
 
   triggerLow(): void {
     this.onbufferedamountlow?.(new Event('bufferedamountlow'));
+  }
+
+  triggerMessage(data: ArrayBuffer): void {
+    this.onmessage?.(new MessageEvent('message', { data }));
   }
 }
 
@@ -198,5 +222,101 @@ describe('TransferOptions type', () => {
     const opts: TransferOptions = { onProgress: () => {} };
     expect(opts.onProgress).toBeDefined();
     expect(opts.onError).toBeUndefined();
+  });
+});
+
+describe('receiveFile', () => {
+  let channel: TestDataChannel;
+  let progressEvents: ProgressInfo[];
+
+  beforeEach(() => {
+    channel = new TestDataChannel();
+    progressEvents = [];
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('assembles chunks into Blob with correct size', async () => {
+    const chunk1 = new ArrayBuffer(100);
+    const chunk2 = new ArrayBuffer(200);
+    const chunk3 = new ArrayBuffer(50);
+    const totalSize = 350;
+
+    const onProgress = vi.fn((p: ProgressInfo) => void progressEvents.push(p));
+
+    const receivePromise = receiveFile(asChannel(channel), 'test.bin', totalSize, onProgress);
+
+    channel.triggerMessage(chunk1);
+    await vi.runAllTimersAsync();
+    channel.triggerMessage(chunk2);
+    await vi.runAllTimersAsync();
+    channel.triggerMessage(chunk3);
+    await vi.runAllTimersAsync();
+
+    const blob = await receivePromise;
+
+    expect(blob.size).toBe(totalSize);
+    expect(blob.type).toBe('application/octet-stream');
+    expect(onProgress).toHaveBeenCalled();
+  });
+
+  it('reports progress for each chunk', async () => {
+    const chunk1 = new ArrayBuffer(100);
+    const chunk2 = new ArrayBuffer(200);
+    const totalSize = 300;
+
+    const onProgress = vi.fn((p: ProgressInfo) => void progressEvents.push(p));
+
+    const receivePromise = receiveFile(asChannel(channel), 'test.bin', totalSize, onProgress);
+
+    channel.triggerMessage(chunk1);
+    await vi.runAllTimersAsync();
+    channel.triggerMessage(chunk2);
+    await vi.runAllTimersAsync();
+
+    await receivePromise;
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(progressEvents[0].bytesTransferred).toBe(100);
+    expect(progressEvents[1].bytesTransferred).toBe(300);
+    expect(progressEvents[1].percentage).toBe(100);
+  });
+
+  it('rejects files larger than 500 MB', async () => {
+    const largeSize = 600 * 1024 * 1024;
+
+    await expect(receiveFile(asChannel(channel), 'large.bin', largeSize, () => {})).rejects.toThrow(/too large/i);
+  });
+
+  it('rejects on channel error', async () => {
+    const totalSize = 100;
+
+    const receivePromise = receiveFile(asChannel(channel), 'test.bin', totalSize, () => {});
+
+    // Use expect().rejects to catch the rejection properly
+    const rejectionPromise = expect(receivePromise).rejects.toThrow(/Data channel error/);
+
+    channel.onerror?.(new Event('error'));
+    await vi.runAllTimersAsync();
+
+    await rejectionPromise;
+  });
+
+  it('resolves with Blob and triggers download', async () => {
+    const chunk = new ArrayBuffer(100);
+    const totalSize = 100;
+
+    const receivePromise = receiveFile(asChannel(channel), 'download.bin', totalSize, () => {});
+
+    channel.triggerMessage(chunk);
+    await vi.runAllTimersAsync();
+
+    const blob = await receivePromise;
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.size).toBe(totalSize);
   });
 });
