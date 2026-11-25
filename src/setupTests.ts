@@ -1,5 +1,6 @@
 // Test setup file - WebRTC polyfill for jsdom
 import { vi } from 'vitest';
+import '@testing-library/jest-dom';
 
 // Simple RTCPeerConnection polyfill for jsdom
 class MockRTCPeerConnection {
@@ -152,6 +153,20 @@ vi.stubGlobal('RTCPeerConnection', MockRTCPeerConnection);
 vi.stubGlobal('RTCDataChannel', MockRTCDataChannel);
 vi.stubGlobal('RTCIceCandidate', MockRTCIceCandidate);
 vi.stubGlobal('RTCSessionDescription', MockRTCSessionDescription);
+
+// Polyfill for window.matchMedia (jsdom doesn't have it)
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = vi.fn().mockImplementation((query) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
 
 // jsdom doesn't implement Blob.prototype.arrayBuffer; polyfill it so
 // File.prototype.slice() chunks (Blobs) can be read as ArrayBuffer in tests.
