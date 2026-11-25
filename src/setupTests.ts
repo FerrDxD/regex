@@ -154,18 +154,21 @@ vi.stubGlobal('RTCDataChannel', MockRTCDataChannel);
 vi.stubGlobal('RTCIceCandidate', MockRTCIceCandidate);
 vi.stubGlobal('RTCSessionDescription', MockRTCSessionDescription);
 
-// Polyfill for window.matchMedia (jsdom doesn't have it)
-if (typeof window !== 'undefined' && !window.matchMedia) {
-  window.matchMedia = vi.fn().mockImplementation((query) => ({
+// Polyfill for window.matchMedia (jsdom doesn't have it or has incomplete implementation)
+if (typeof window !== 'undefined') {
+  const createMockMatchMedia = () => ({
     matches: false,
-    media: query,
+    media: '',
     onchange: null,
     addListener: vi.fn(),
     removeListener: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn(),
-  }));
+  });
+  window.matchMedia = vi.fn((_query: string) => createMockMatchMedia());
+  // Also stub on global for good measure
+  vi.stubGlobal('matchMedia', window.matchMedia);
 }
 
 // jsdom doesn't implement Blob.prototype.arrayBuffer; polyfill it so

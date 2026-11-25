@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { QrCode, FileText, Upload, X } from 'lucide-react';
 import { createSignalingClient, type SignalingClient, type SignalingMessage } from './core/signaling';
 import { createPeerConnection, createDataChannel, type WebRTCCallbacks, type PeerConnectionState } from './core/webrtc';
 import {
@@ -8,32 +9,43 @@ import {
   createTransferAccept,
   createTransferDecline,
   createFileComplete,
+  createTextDrop,
   type P2PControlMessage,
   type FileMeta,
 } from './core/controlProtocol';
-import { sendFile, receiveFile, CHUNK_SIZE, type ProgressInfo } from './core/fileTransfer';
+import { sendFile, receiveFile, CHUNK_SIZE } from './core/fileTransfer';
 import type { PeerMetadata } from './core/types';
+import { RadarView } from './components/RadarView';
+import { QrPairingModal } from './components/QrPairingModal';
+import { TransferSheet } from './components/TransferSheet';
+import { InstantTextBox } from './components/InstantTextBox';
+import { DragDropOverlay } from './components/DragDropOverlay';
+import { useSessionStore } from './store/useSessionStore';
 
 const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'ws://localhost:8080/signaling';
-
-type TransferDirection = 'sending' | 'receiving' | null;
-type TransferState = {
-  direction: TransferDirection;
-  fileId: string | null;
-  fileName: string | null;
-  fileSize: number | null;
-  progress: ProgressInfo | null;
-  abortController: AbortController | null;
-};
 
 function App() {
   // Signaling
   const [_signalingClient, setSignalingClient] = useState<SignalingClient | null>(null);
   const signalingClientRef = useRef<SignalingClient | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [peers, setPeers] = useState<PeerMetadata[]>([]);
   const [localPeerId, setLocalPeerId] = useState<string>('');
-  const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
+
+  // Store selectors
+  const selectedPeerId = useSessionStore((state) => state.selectedPeerId);
+  const transferState = useSessionStore((state) => state.transferState);
+
+  const setPeers = useSessionStore((state) => state.setPeers);
+  const addPeer = useSessionStore((state) => state.addPeer);
+  const removePeer = useSessionStore((state) => state.removePeer);
+  const setSelectedPeer = useSessionStore((state) => state.setSelectedPeer);
+  const setConnectionStatus = useSessionStore((state) => state.setConnectionStatus);
+  const setTransferState = useSessionStore((state) => state.setTransferState);
+  const resetTransferState = useSessionStore((state) => state.resetTransferState);
+  const openQrModal = useSessionStore((state) => state.openQrModal);
+  const closeQrModal = useSessionStore((state) => state.closeQrModal);
+  const setDragDropActive = useSessionStore((state) => state.setDragDropActive);
+  const setClipboardText = useSessionStore((state) => state.setClipboardText);
 
   // WebRTC
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -48,18 +60,8 @@ function App() {
   const handleTransferDeclineRef = useRef<((msg: Extract<P2PControlMessage, { type: 'TRANSFER_DECLINE' }>) => void) | null>(null);
   const handleFileCompleteRef = useRef<((msg: Extract<P2PControlMessage, { type: 'FILE_COMPLETE' }>) => void) | null>(null);
 
-  // Transfer
-  const [transferState, setTransferState] = useState<TransferState>({
-    direction: null,
-    fileId: null,
-    fileName: null,
-    fileSize: null,
-    progress: null,
-    abortController: null,
-  });
-
   // Local peer info (simplified for demo)
-  const localPeerInfo: PeerMetadata = {
+  const localPeerInfo: PeerMetadata = useMemo(() => ({
     peerId: `peer-${Math.random().toString(36).slice(2, 8)}`,
     alias: 'You',
     deviceType: 'desktop',
@@ -67,7 +69,17 @@ function App() {
     browser: navigator.userAgent.slice(0, 50),
     ipHash: 'local',
     joinedAt: Date.now(),
-  };
+  }), []);
+
+  // Generate room ID for QR pairing (local state, not in store)
+  const roomId = useMemo(() => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = 'RX-';
+    for (let i = 0; i < 6; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+  }, []);
 
   // Handler refs for signaling (to avoid stale closures) - use mutable object wrapper
   const handleSignalingMessageRef = useRef<{ current: ((msg: SignalingMessage) => void) | null }>({ current: null });
@@ -88,11 +100,13 @@ function App() {
       .then(() => {
         setIsConnected(true);
         setLocalPeerId(localPeerInfo.peerId);
+        setConnectionStatus('connected');
         // Join local network
         client.send({ type: 'JOIN_LOCAL', peerInfo: localPeerInfo });
       })
       .catch((err) => {
         console.error('Signaling connection failed:', err);
+        setConnectionStatus('error');
       });
 
     return () => {
@@ -101,8 +115,9 @@ function App() {
       signalingClientRef.current = null;
       setSignalingClient(null);
       setIsConnected(false);
+      setConnectionStatus('searching');
     };
-  }, []);
+  }, [localPeerInfo, setConnectionStatus]);
 
   // Handle incoming signaling messages (updates ref for live access)
   const handleSignalingMessage = useCallback((_msg: SignalingMessage) => {
@@ -111,12 +126,12 @@ function App() {
         setPeers(_msg.peers.filter((p: PeerMetadata) => p.peerId !== localPeerInfo.peerId));
         break;
       case 'PEER_JOINED':
-        setPeers(prev => [...prev.filter(p => p.peerId !== _msg.peer.peerId), _msg.peer]);
+        addPeer(_msg.peer);
         break;
       case 'PEER_LEFT':
-        setPeers(prev => prev.filter(p => p.peerId !== _msg.peerId));
+        removePeer(_msg.peerId);
         if (_msg.peerId === selectedPeerId) {
-          setSelectedPeerId(null);
+          setSelectedPeer(null);
           cleanupWebRTC();
         }
         break;
@@ -129,7 +144,7 @@ function App() {
         console.error('Signaling error:', _msg.error);
         break;
     }
-  }, [localPeerInfo.peerId, selectedPeerId]);
+  }, [localPeerInfo.peerId, selectedPeerId, setPeers, addPeer, removePeer, setSelectedPeer]);
 
   // Keep ref updated
   handleSignalingMessageRef.current.current = handleSignalingMessage;
@@ -189,7 +204,8 @@ function App() {
       cleanupWebRTC();
     }
 
-    setSelectedPeerId(peerId);
+    setSelectedPeer(peerId);
+    setConnectionStatus('handshaking');
 
     const callbacks: WebRTCCallbacks = {
       onConnectionStateChange: (state) => {
@@ -233,7 +249,7 @@ function App() {
       senderId: localPeerInfo.peerId,
       signal: pc.localDescription!,
     });
-  }, [localPeerInfo.peerId, flushPendingIceCandidates]);
+  }, [localPeerInfo.peerId, flushPendingIceCandidates, setSelectedPeer, setConnectionStatus]);
 
   // Set up data channel event handlers
   const setupDataChannel = useCallback((channel: RTCDataChannel) => {
@@ -242,11 +258,13 @@ function App() {
 
     channel.onopen = () => {
       console.log('Data channel open');
+      setConnectionStatus('connected');
     };
 
     channel.onclose = () => {
       console.log('Data channel closed');
       dataChannelRef.current = null;
+      setConnectionStatus('searching');
     };
 
     channel.onerror = (err) => {
@@ -258,7 +276,7 @@ function App() {
       cleanupControlRef.current();
     }
     cleanupControlRef.current = receiveControlMessage(channel, handleControlMessage);
-  }, []);
+  }, [setConnectionStatus]);
 
   // Handle incoming control messages - dispatches to refs to avoid stale closures
   const handleControlMessage = useCallback((msg: P2PControlMessage) => {
@@ -284,21 +302,14 @@ function App() {
   }, []);
 
   // Reset transfer state for next file (must be before handlers that use it)
-  const resetTransferState = useCallback(() => {
-    setTransferState({
-      direction: null,
-      fileId: null,
-      fileName: null,
-      fileSize: null,
-      progress: null,
-      abortController: null,
-    });
+  const handleResetTransferState = useCallback(() => {
+    resetTransferState();
     // Clear file input
     const fileInput = document.getElementById('file-input') as HTMLInputElement;
     if (fileInput) fileInput.value = '';
-  }, []);
+  }, [resetTransferState]);
 
-  // Handle incoming transfer offer
+  // Handle incoming transfer offer - set transfer state for TransferSheet
   const handleTransferOffer = useCallback((msg: Extract<P2PControlMessage, { type: 'TRANSFER_OFFER' }>) => {
     if (msg.files.length === 0) return;
 
@@ -312,39 +323,11 @@ function App() {
       progress: { percentage: 0, speedMBps: 0, etaSeconds: 0, bytesTransferred: 0, totalBytes: file.size },
       abortController,
     });
-
-    // Auto-accept for demo (in real app, show confirmation dialog)
-    const acceptMsg = createTransferAccept(file.fileId, localPeerInfo.peerId);
-    sendControlMessage(dataChannelRef.current!, acceptMsg);
-
-    // Start receiving - use local abortController const instead of stale transferState
-    if (dataChannelRef.current) {
-      receiveFile(
-        dataChannelRef.current,
-        file.name,
-        file.size,
-        (progress) => {
-          setTransferState(prev => ({ ...prev, progress }));
-        }
-      )
-        .then((blob) => {
-          console.log('File received:', blob.size, 'bytes');
-          // Send FILE_COMPLETE
-          const completeMsg = createFileComplete(file.fileId, localPeerInfo.peerId);
-          sendControlMessage(dataChannelRef.current!, completeMsg);
-          resetTransferState();
-        })
-        .catch((err) => {
-          console.error('Receive error:', err);
-          resetTransferState();
-        });
-    }
-  }, [localPeerInfo.peerId, resetTransferState]);
+    // Do NOT auto-accept; TransferSheet will render and user must click Accept
+  }, [setTransferState]);
 
   // Handle transfer accepted by receiver
   const handleTransferAccept = useCallback((_msg: Extract<P2PControlMessage, { type: 'TRANSFER_ACCEPT' }>) => {
-    // Check against current transferState via closure - we need to read latest state
-    // Use a ref for fileId if needed, but for now check if we have a pending send
     const fileInput = document.getElementById('file-input') as HTMLInputElement;
     const file = fileInput?.files?.[0];
     if (!file || dataChannelRef.current === null) return;
@@ -354,11 +337,12 @@ function App() {
       file,
       {
         onProgress: (progress) => {
-          setTransferState(prev => ({ ...prev, progress }));
+          const current = useSessionStore.getState().transferState;
+          if (current) setTransferState({ ...current, progress });
         },
         onError: (err) => {
           console.error('Send error:', err);
-          resetTransferState();
+          handleResetTransferState();
         },
       }
     )
@@ -368,23 +352,21 @@ function App() {
       })
       .catch((err) => {
         console.error('Send error:', err);
-        resetTransferState();
+        handleResetTransferState();
       });
-  }, [resetTransferState]);
+  }, [setTransferState, handleResetTransferState]);
 
   // Handle transfer declined
   const handleTransferDecline = useCallback((_msg: Extract<P2PControlMessage, { type: 'TRANSFER_DECLINE' }>) => {
-    // We can't easily check transferState.fileId here due to stale closure
-    // In practice, we'd use a ref for current fileId. For now, just reset.
     console.log('Transfer declined');
-    resetTransferState();
-  }, [resetTransferState]);
+    handleResetTransferState();
+  }, [handleResetTransferState]);
 
   // Handle file complete notification
   const handleFileComplete = useCallback((_msg: Extract<P2PControlMessage, { type: 'FILE_COMPLETE' }>) => {
     console.log('Transfer complete confirmed');
-    resetTransferState();
-  }, [resetTransferState]);
+    handleResetTransferState();
+  }, [handleResetTransferState]);
 
   // Keep handler refs updated to latest versions
   handleTransferOfferRef.current = handleTransferOffer;
@@ -392,6 +374,13 @@ function App() {
   handleTransferDeclineRef.current = handleTransferDecline;
   handleFileCompleteRef.current = handleFileComplete;
   handleIncomingSignalRef.current.current = handleIncomingSignal;
+
+  // Initiate WebRTC connection when selectedPeerId changes
+  useEffect(() => {
+    if (selectedPeerId) {
+      initiateConnection(selectedPeerId);
+    }
+  }, [selectedPeerId, initiateConnection]);
 
   // Clean up WebRTC connection
   const cleanupWebRTC = useCallback(() => {
@@ -412,9 +401,9 @@ function App() {
     }
     pcStateRef.current = 'new';
     pendingIceCandidatesRef.current = [];
-    setSelectedPeerId(null);
-    resetTransferState();
-  }, [resetTransferState]);
+    setSelectedPeer(null);
+    handleResetTransferState();
+  }, [setSelectedPeer, handleResetTransferState]);
 
   // Send file handler
   const handleSendFile = useCallback(() => {
@@ -442,19 +431,138 @@ function App() {
 
     const offerMsg = createTransferOffer([fileMeta], localPeerInfo.peerId);
     sendControlMessage(dataChannelRef.current, offerMsg);
+  }, [selectedPeerId, localPeerInfo.peerId, setTransferState]);
+
+  // Handle file drop from DragDropOverlay
+  const handleDrop = useCallback((files: File[]) => {
+    if (files.length === 0 || !selectedPeerId || !dataChannelRef.current) return;
+    const file = files[0];
+
+    const fileId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const fileMeta: FileMeta = {
+      fileId,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      chunkCount: Math.ceil(file.size / CHUNK_SIZE),
+    };
+
+    setTransferState({
+      direction: 'sending',
+      fileId,
+      fileName: file.name,
+      fileSize: file.size,
+      progress: { percentage: 0, speedMBps: 0, etaSeconds: 0, bytesTransferred: 0, totalBytes: file.size },
+      abortController: new AbortController(),
+    });
+
+    const offerMsg = createTransferOffer([fileMeta], localPeerInfo.peerId);
+    sendControlMessage(dataChannelRef.current, offerMsg);
+    setDragDropActive(false);
+  }, [selectedPeerId, localPeerInfo.peerId, setTransferState, setDragDropActive]);
+
+  // Handle text send from InstantTextBox
+  const handleSendText = useCallback((text: string) => {
+    if (!selectedPeerId || !dataChannelRef.current) return;
+    const textMsg = createTextDrop(text, localPeerInfo.peerId);
+    sendControlMessage(dataChannelRef.current, textMsg);
   }, [selectedPeerId, localPeerInfo.peerId]);
 
-  // Cancel transfer
-  const handleCancelTransfer = useCallback(() => {
+  // TransferSheet handlers
+  const handleTransferSheetAccept = useCallback(() => {
+    // Called when user clicks "Accept" on incoming transfer
+    if (!transferState || transferState.direction !== 'receiving' || !transferState.fileId || !dataChannelRef.current) return;
+    const acceptMsg = createTransferAccept(transferState.fileId, localPeerInfo.peerId);
+    sendControlMessage(dataChannelRef.current, acceptMsg);
+
+    // Start receiving - use local abortController const
+    if (dataChannelRef.current && transferState.fileName && transferState.fileSize !== null) {
+      receiveFile(
+        dataChannelRef.current,
+        transferState.fileName,
+        transferState.fileSize,
+        (progress) => {
+          const current = useSessionStore.getState().transferState;
+          if (current) setTransferState({ ...current, progress });
+        }
+      )
+        .then((blob) => {
+          console.log('File received:', blob.size, 'bytes');
+          // Send FILE_COMPLETE
+          const completeMsg = createFileComplete(transferState.fileId!, localPeerInfo.peerId);
+          sendControlMessage(dataChannelRef.current!, completeMsg);
+          handleResetTransferState();
+        })
+        .catch((err) => {
+          console.error('Receive error:', err);
+          handleResetTransferState();
+        });
+    }
+  }, [transferState, localPeerInfo.peerId, setTransferState, handleResetTransferState]);
+
+  const handleTransferSheetDecline = useCallback(() => {
+    // Called when user clicks "Decline" on incoming transfer
+    if (!transferState || transferState.direction !== 'receiving' || !transferState.fileId || !dataChannelRef.current) return;
+    const declineMsg = createTransferDecline(transferState.fileId, localPeerInfo.peerId);
+    sendControlMessage(dataChannelRef.current, declineMsg);
+    handleResetTransferState();
+  }, [transferState, localPeerInfo.peerId, handleResetTransferState]);
+
+  const handleTransferSheetCancel = useCallback(() => {
+    // Called when user clicks "Cancel" during active transfer
+    if (!transferState || !dataChannelRef.current) return;
     if (transferState.abortController) {
       transferState.abortController.abort();
     }
     if (transferState.direction === 'sending' && transferState.fileId) {
       const declineMsg = createTransferDecline(transferState.fileId, localPeerInfo.peerId);
-      sendControlMessage(dataChannelRef.current!, declineMsg);
+      sendControlMessage(dataChannelRef.current, declineMsg);
     }
-    resetTransferState();
-  }, [transferState, localPeerInfo.peerId, resetTransferState]);
+    handleResetTransferState();
+  }, [transferState, localPeerInfo.peerId, handleResetTransferState]);
+
+  // Global paste handler (Ctrl/Cmd + V)
+  useEffect(() => {
+    const handlePaste = async (event: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const modifierPressed = isMac ? event.metaKey : event.ctrlKey;
+
+      if (modifierPressed && event.key === 'v') {
+        // Only trigger if not focused on an input/textarea
+        const activeElement = document.activeElement;
+        const isInputFocused = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement;
+
+        if (!isInputFocused && selectedPeerId && dataChannelRef.current) {
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text.trim()) {
+              const textMsg = createTextDrop(text, localPeerInfo.peerId);
+              sendControlMessage(dataChannelRef.current, textMsg);
+              setClipboardText(text);
+            }
+          } catch (err) {
+            console.warn('Clipboard read failed:', err);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handlePaste);
+    return () => window.removeEventListener('keydown', handlePaste);
+  }, [selectedPeerId, localPeerInfo.peerId, setClipboardText]);
+
+  // QR scan handler
+  const handleQrScan = useCallback((code: string) => {
+    const cleanCode = code.trim().toUpperCase();
+    if (cleanCode.length >= 6 && signalingClientRef.current) {
+      signalingClientRef.current.send({
+        type: 'JOIN_ROOM',
+        roomId: cleanCode,
+        peerInfo: localPeerInfo,
+      });
+    }
+    closeQrModal();
+  }, [localPeerInfo, closeQrModal]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-mono">
@@ -463,7 +571,7 @@ function App() {
         <p className="text-xs text-zinc-500">P2P File Transfer</p>
       </header>
 
-      <main className="p-4 space-y-4 max-w-3xl mx-auto">
+      <main className="p-4 space-y-4 max-w-3xl mx-auto pb-32">
         {/* Connection Status */}
         <section className="rounded-lg border border-zinc-800 p-4">
           <h2 className="text-sm font-medium mb-3">Connection</h2>
@@ -475,40 +583,23 @@ function App() {
           </div>
         </section>
 
-        {/* Peer List */}
+        {/* Radar View - replaces Peer List */}
         <section className="rounded-lg border border-zinc-800 p-4">
-          <h2 className="text-sm font-medium mb-3">Peers</h2>
-          {peers.length === 0 ? (
-            <p className="text-zinc-500 text-sm">No peers found. Waiting for others to join...</p>
-          ) : (
-            <ul className="space-y-2">
-              {peers.map((peer) => (
-                <li
-                  key={peer.peerId}
-                  className={`flex items-center justify-between p-2 rounded border ${
-                    selectedPeerId === peer.peerId
-                      ? 'border-green-500 bg-green-500/10'
-                      : 'border-zinc-700 hover:border-zinc-600'
-                  }`}
-                >
-                  <div>
-                    <span className="font-medium">{peer.alias}</span>
-                    <span className="text-zinc-500 ml-2 text-xs">({peer.peerId.slice(0, 8)})</span>
-                  </div>
-                  <button
-                    onClick={() => initiateConnection(peer.peerId)}
-                    disabled={selectedPeerId !== null}
-                    className="px-3 py-1 text-xs rounded border border-zinc-600 hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {selectedPeerId === peer.peerId ? 'Connected' : 'Connect'}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium">Peers</h2>
+            <button
+              type="button"
+              onClick={() => openQrModal('host')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-600 hover:border-zinc-500 text-zinc-300 hover:text-zinc-100 transition-colors"
+            >
+              <QrCode size={14} />
+              <span>Pair</span>
+            </button>
+          </div>
+          <RadarView />
         </section>
 
-        {/* Transfer Controls */}
+        {/* File Input & Send Controls */}
         <section className="rounded-lg border border-zinc-800 p-4">
           <h2 className="text-sm font-medium mb-3">File Transfer</h2>
 
@@ -516,36 +607,39 @@ function App() {
             id="file-input"
             type="file"
             className="mb-3 block w-full text-sm text-zinc-400 file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-zinc-800 file:text-zinc-200 hover:file:bg-zinc-700"
-            disabled={!selectedPeerId || transferState.direction !== null}
+            disabled={!selectedPeerId || transferState?.direction !== null}
           />
 
           <div className="flex gap-2">
             <button
               onClick={handleSendFile}
-              disabled={!selectedPeerId || transferState.direction !== null}
-              className="px-4 py-2 text-sm rounded border border-zinc-600 hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!selectedPeerId || transferState?.direction !== null}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm rounded border border-zinc-600 hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Send File
+              <Upload size={14} />
+              <span>Send File</span>
             </button>
             <button
-              onClick={handleCancelTransfer}
-              disabled={transferState.direction === null}
-              className="px-4 py-2 text-sm rounded border border-red-500/50 text-red-400 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleResetTransferState}
+              disabled={transferState?.direction === null}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm rounded border border-red-500/50 text-red-400 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Cancel
+              <X size={14} />
+              <span>Cancel</span>
             </button>
             <button
               onClick={cleanupWebRTC}
               disabled={selectedPeerId === null}
-              className="px-4 py-2 text-sm rounded border border-zinc-600 hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
+              className="flex items-center gap-1.5 px-4 py-2 text-sm rounded border border-zinc-600 hover:border-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
             >
-              Disconnect
+              <FileText size={14} />
+              <span>Disconnect</span>
             </button>
           </div>
         </section>
 
-        {/* Transfer Progress */}
-        {transferState.direction !== null && (
+        {/* Transfer Progress (legacy inline - TransferSheet handles modal now) */}
+        {transferState && transferState.direction !== null && (
           <section className="rounded-lg border border-zinc-800 p-4">
             <h2 className="text-sm font-medium mb-3">
               {transferState.direction === 'sending' ? 'Sending' : 'Receiving'}: {transferState.fileName}
@@ -582,6 +676,22 @@ function App() {
             </div>
           </section>
         )}
+
+        {/* Instant Text Box at bottom */}
+        <InstantTextBox onSend={handleSendText} />
+
+        {/* QR Pairing Modal */}
+        <QrPairingModal roomId={roomId} onScan={handleQrScan} />
+
+        {/* Transfer Sheet Modal */}
+        <TransferSheet
+          onAccept={handleTransferSheetAccept}
+          onDecline={handleTransferSheetDecline}
+          onCancel={handleTransferSheetCancel}
+        />
+
+        {/* Drag Drop Overlay */}
+        <DragDropOverlay onDrop={handleDrop} />
       </main>
     </div>
   );
