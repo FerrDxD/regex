@@ -1,5 +1,7 @@
 import type { SignalingMessage } from './types';
 
+export type { SignalingMessage } from './types';
+
 export interface SignalingClient {
   connect(): Promise<void>;
   send(message: SignalingMessage): void;

@@ -1,5 +1,7 @@
 import type { FileMeta, P2PControlMessage } from './types.js';
 
+export type { FileMeta, P2PControlMessage } from './types.js';
+
 // --- Control message factories ---
 
 export function createTextDrop(text: string, senderId: string): P2PControlMessage {
@@ -71,6 +73,52 @@ export function parseControlMessage(raw: string): P2PControlMessage | null {
   } catch {
     return null;
   }
+}
+
+// --- Send / receive over data channel ---
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function isArrayBufferLike(value: unknown): value is ArrayBuffer {
+  return value instanceof ArrayBuffer ||
+    (typeof value === 'object' && value !== null && 'byteLength' in value);
+}
+
+export function sendControlMessage(channel: RTCDataChannel, message: P2PControlMessage): void {
+  if (channel.readyState !== 'open') {
+    console.warn('sendControlMessage: channel not open');
+    return;
+  }
+  const json = serializeControlMessage(message);
+  const data = encoder.encode(json);
+  // Create a new ArrayBuffer to ensure compatibility with jsdom
+  const buffer = new ArrayBuffer(data.byteLength);
+  new Uint8Array(buffer).set(data);
+  channel.send(buffer);
+}
+
+export function receiveControlMessage(
+  channel: RTCDataChannel,
+  onMessage: (msg: P2PControlMessage) => void
+): () => void {
+  const messageHandler = (event: MessageEvent): void => {
+    const data = event.data;
+    if (!isArrayBufferLike(data)) {
+      return;
+    }
+    const json = decoder.decode(new Uint8Array(data));
+    const msg = parseControlMessage(json);
+    if (msg !== null) {
+      onMessage(msg);
+    }
+  };
+
+  channel.onmessage = messageHandler;
+
+  return (): void => {
+    channel.onmessage = null;
+  };
 }
 
 // --- Instant Text Drop (pure TS, no React, no dangerouslySetInnerHTML) ---
