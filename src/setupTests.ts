@@ -152,3 +152,20 @@ vi.stubGlobal('RTCPeerConnection', MockRTCPeerConnection);
 vi.stubGlobal('RTCDataChannel', MockRTCDataChannel);
 vi.stubGlobal('RTCIceCandidate', MockRTCIceCandidate);
 vi.stubGlobal('RTCSessionDescription', MockRTCSessionDescription);
+
+// jsdom doesn't implement Blob.prototype.arrayBuffer; polyfill it so
+// File.prototype.slice() chunks (Blobs) can be read as ArrayBuffer in tests.
+if (typeof Blob !== 'undefined' && !Blob.prototype.arrayBuffer) {
+  Blob.prototype.arrayBuffer = function (this: Blob): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (): void => {
+        resolve(reader.result as ArrayBuffer);
+      };
+      reader.onerror = (): void => {
+        reject(reader.error ?? new Error('Failed to read blob as ArrayBuffer'));
+      };
+      reader.readAsArrayBuffer(this);
+    });
+  };
+}
