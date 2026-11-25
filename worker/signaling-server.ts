@@ -6,7 +6,7 @@ export interface Env {
   ROOM: DurableObjectNamespace;
 }
 
-type WebSocketWithPeerId = WebSocket & { peerId: string; roomKey: string };
+type WebSocketWithPeerId = WebSocket & { peerId: string; roomKey: string; ipHash: string };
 
 export function generatePeerId(): string {
   return crypto.randomUUID();
@@ -45,7 +45,7 @@ export function isValidSignalingMessage(message: unknown): message is SignalingM
   if (!message || typeof message !== 'object') return false;
   const msg = message as Record<string, unknown>;
   const type = msg.type as string;
-  if (!['JOIN_LOCAL', 'JOIN_ROOM', 'PEER_LIST', 'PEER_JOINED', 'PEER_LEFT', 'SIGNAL'].includes(type)) {
+  if (!['JOIN_LOCAL', 'JOIN_ROOM', 'PEER_LIST', 'PEER_JOINED', 'PEER_LEFT', 'SIGNAL', 'ERROR'].includes(type)) {
     return false;
   }
 
@@ -82,7 +82,7 @@ export function isValidPeerMetadata(peer: unknown): peer is PeerMetadata {
 }
 
 export class Room implements DurableObject {
-  private peers: Map<string, { ws: WebSocketWithPeerId; metadata: PeerMetadata }>;
+  private peers: Map<string, { ws: WebSocketWithPeerId; metadata: PeerMetadata | null }>;
   private roomKey: string;
 
   constructor(state: DurableObjectState, _env: Env) {
@@ -106,7 +106,11 @@ export class Room implements DurableObject {
     wsWithPeerId.peerId = peerId;
     wsWithPeerId.roomKey = this.roomKey;
 
-    this.peers.set(peerId, { ws: wsWithPeerId, metadata: null as unknown as PeerMetadata });
+    const ip = extractClientIp(request);
+    const salt = getDailySalt();
+    wsWithPeerId.ipHash = await hashIp(ip, salt);
+
+    this.peers.set(peerId, { ws: wsWithPeerId, metadata: null });
 
     server.addEventListener('message', (event) => this.webSocketMessage(wsWithPeerId, event.data));
     server.addEventListener('close', (event) => this.webSocketClose(wsWithPeerId, event.code, event.reason));
@@ -157,13 +161,9 @@ export class Room implements DurableObject {
   }
 
   private async handleJoinLocal(ws: WebSocketWithPeerId, peerInfo: PeerMetadata): Promise<void> {
-    const ip = extractClientIp(new Request('http://localhost'));
-    const salt = getDailySalt();
-    const ipHash = await hashIp(ip, salt);
-
     const updatedPeerInfo: PeerMetadata = {
       ...peerInfo,
-      ipHash,
+      ipHash: ws.ipHash,
       peerId: ws.peerId,
     };
 
@@ -183,13 +183,9 @@ export class Room implements DurableObject {
   }
 
   private async handleJoinRoom(ws: WebSocketWithPeerId, _roomId: string, peerInfo: PeerMetadata): Promise<void> {
-    const ip = extractClientIp(new Request('http://localhost'));
-    const salt = getDailySalt();
-    const ipHash = await hashIp(ip, salt);
-
     const updatedPeerInfo: PeerMetadata = {
       ...peerInfo,
-      ipHash,
+      ipHash: ws.ipHash,
       peerId: ws.peerId,
     };
 
@@ -250,7 +246,7 @@ export class Room implements DurableObject {
   }
 
   private sendError(ws: WebSocket, error: string): void {
-    this.send(ws, { type: 'ERROR', error } as unknown as SignalingMessage);
+    this.send(ws, { type: 'ERROR', error });
   }
 
   private broadcast(message: SignalingMessage, excludePeerId: string): void {

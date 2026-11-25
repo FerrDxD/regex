@@ -14,7 +14,8 @@ export type SignalingMessage =
   | { type: 'PEER_LIST'; peers: PeerMetadata[] }
   | { type: 'PEER_JOINED'; peer: PeerMetadata }
   | { type: 'PEER_LEFT'; peerId: string }
-  | { type: 'SIGNAL'; targetId: string; senderId: string; signal: RTCSessionDescriptionInit | RTCIceCandidateInit };
+  | { type: 'SIGNAL'; targetId: string; senderId: string; signal: RTCSessionDescriptionInit | RTCIceCandidateInit }
+  | { type: 'ERROR'; error: string };
 
 export type P2PControlMessage =
   | { type: 'TEXT_DROP'; text: string; senderId: string }
