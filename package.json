@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "dev:tunnel": ""
+    "dev:tunnel": "pwsh -NoProfile -File ./scripts/dev-tunnel.ps1"
   },
   "dependencies": {
     "react": "^18.3.1",
