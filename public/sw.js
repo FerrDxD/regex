@@ -1,14 +1,16 @@
 // Service Worker untuk Regex PWA.
-// Strategi: cache-first untuk app shell (HTML, manifest, ikon), network-first
-// dengan fallback cache untuk aset JS/CSS dan navigasi. Signaling WebSocket
-// tidak lewat fetch event (protokol terpisah) sehingga selalu butuh jaringan.
-// Pesan dan file pengguna tidak pernah di-cache (zero-storage, AGENTS §2.1).
+// Strategi: cache-first untuk aset statis (manifest, ikon, favicon),
+// network-first untuk HTML dan aset lain (JS/CSS). index.html SENGaja
+// tidak di-cache supaya setiap deploy selalu dapat HTML fresh dengan
+// referensi asset hash yang benar (mencegah white screen setelah deploy).
+// Signaling WebSocket tidak lewat fetch event. Pesan dan file pengguna
+// tidak pernah di-cache (zero-storage, AGENTS §2.1).
 
 const CACHE_NAME = 'regex-v1';
 
+// Aset statis yang di-cache. index.html dan / SENGaja DICANTUMKAN
+// karena berubah setiap deploy (Vite mengubah referensi asset hash).
 const PRECACHE_URLS = [
-  '/',
-  '/index.html',
   '/manifest.json',
   '/favicon.svg',
   '/icon-192.svg',
@@ -33,7 +35,7 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Cache-first untuk aset app shell yang sudah di-precache.
+  // Cache-first untuk aset statis yang sudah di-precache.
   if (PRECACHE_URLS.includes(url.pathname) || url.pathname.endsWith('.svg') || url.pathname.endsWith('.json')) {
     event.respondWith(
       caches.match(request).then((cached) => {
@@ -48,11 +50,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network-first dengan fallback cache untuk sisa aset (JS, CSS, navigasi HTML).
+  // Network-first untuk HTML, JS, CSS, dan sisa aset.
+  // Cache respons berhasil untuk JS/CSS agar bisa digunakan offline nanti.
   event.respondWith(
     fetch(request).then((response) => {
-      const clone = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+      if (response.ok && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css'))) {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+      }
       return response;
     }).catch(() => caches.match(request))
   );
