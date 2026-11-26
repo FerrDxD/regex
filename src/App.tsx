@@ -139,6 +139,10 @@ function App() {
         }
         break;
       case 'SIGNAL':
+        // Auto-select the sender if no peer is selected yet (initial connection setup)
+        if (selectedPeerId === null && _msg.senderId !== localPeerInfo.peerId) {
+          setSelectedPeer(_msg.senderId);
+        }
         if (_msg.senderId === selectedPeerId) {
           handleIncomingSignalRef.current.current?.(_msg.signal);
         }
@@ -168,7 +172,41 @@ function App() {
 
   // Handle incoming WebRTC signal (SDP offer/answer or ICE candidate)
   const handleIncomingSignal = useCallback(async (signal: RTCSessionDescriptionInit | RTCIceCandidateInit) => {
-    const pc = pcRef.current;
+    let pc = pcRef.current;
+
+    // Jika belum ada PC dan menerima offer, buat PC (kita adalah callee/penerima)
+    if (!pc && 'sdp' in signal && signal.type === 'offer') {
+      const callbacks: WebRTCCallbacks = {
+        onConnectionStateChange: (state) => {
+          pcStateRef.current = state;
+          console.log('PC state:', state);
+        },
+        onIceCandidate: (candidate) => {
+          signalingClientRef.current?.send({
+            type: 'SIGNAL',
+            targetId: selectedPeerId!,
+            senderId: localPeerInfo.peerId,
+            signal: candidate,
+          });
+        },
+        onDataChannel: (channel) => {
+          setupDataChannel(channel);
+        },
+        onIceConnectionStateChange: (state) => {
+          console.log('ICE state:', state);
+        },
+        onError: (err) => {
+          console.error('WebRTC error:', err);
+        },
+      };
+
+      pc = createPeerConnection(undefined, callbacks);
+      pcRef.current = pc;
+
+      const channel = createDataChannel(pc, 'file-transfer');
+      setupDataChannel(channel);
+    }
+
     if (!pc) return;
 
     if ('sdp' in signal) {
