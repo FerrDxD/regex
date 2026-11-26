@@ -24,6 +24,9 @@ type SessionState = {
   qrTab: 'host' | 'guest';
   dragDropActive: boolean;
   clipboardText: string;
+  isOnline: boolean;
+  pwaInstalled: boolean;
+  showInstallPrompt: boolean;
 };
 
 type SessionActions = {
@@ -39,6 +42,9 @@ type SessionActions = {
   setQrTab: (tab: 'host' | 'guest') => void;
   setDragDropActive: (active: boolean) => void;
   setClipboardText: (text: string) => void;
+  setOnlineStatus: (online: boolean) => void;
+  setPwaInstalled: (installed: boolean) => void;
+  setShowInstallPrompt: (show: boolean) => void;
 };
 
 type SessionStore = SessionState & SessionActions;
@@ -53,6 +59,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
   qrTab: 'host',
   dragDropActive: false,
   clipboardText: '',
+  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  pwaInstalled: false,
+  showInstallPrompt: false,
 
   // Actions
   setPeers: (peers) => set({ peers }),
@@ -67,4 +76,7 @@ export const useSessionStore = create<SessionStore>((set) => ({
   setQrTab: (tab) => set({ qrTab: tab }),
   setDragDropActive: (active) => set({ dragDropActive: active }),
   setClipboardText: (text) => set({ clipboardText: text }),
+  setOnlineStatus: (online) => set({ isOnline: online }),
+  setPwaInstalled: (installed) => set({ pwaInstalled: installed }),
+  setShowInstallPrompt: (show) => set({ showInstallPrompt: show }),
 }));
