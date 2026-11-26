@@ -671,6 +671,16 @@ function App() {
             disabled={!selectedPeerId || transferState?.direction !== null}
           />
 
+          {(!selectedPeerId || transferState?.direction !== null || !isConnected) && (
+            <p className="text-xs text-zinc-500 font-mono mb-2">
+              {!selectedPeerId
+                ? 'Pilih perangkat di radar dulu'
+                : transferState?.direction !== null
+                ? 'Tunggu transfer selesai atau batalkan'
+                : 'Tunggu koneksi P2P aktif'}
+            </p>
+          )}
+
           <div className="flex gap-2">
             <button
               onClick={handleSendFile}

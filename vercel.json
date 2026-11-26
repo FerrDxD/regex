@@ -42,6 +42,21 @@
       "continue": true
     },
     {
+      "src": "/404.html",
+      "dest": "/404.html",
+      "status": 404
+    },
+    {
+      "src": "/500.html",
+      "dest": "/500.html",
+      "status": 500
+    },
+    {
+      "src": "/504.html",
+      "dest": "/504.html",
+      "status": 504
+    },
+    {
       "handle": "filesystem"
     },
     {
