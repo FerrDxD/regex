@@ -567,6 +567,18 @@ function App() {
     closeQrModal();
   }, [localPeerInfo, closeQrModal]);
 
+  // Open QR modal as host AND join our own room so scanners can find us
+  const handleOpenHostQr = useCallback(() => {
+    if (signalingClientRef.current) {
+      signalingClientRef.current.send({
+        type: 'JOIN_ROOM',
+        roomId: roomId,
+        peerInfo: localPeerInfo,
+      });
+    }
+    openQrModal('host');
+  }, [roomId, localPeerInfo, openQrModal]);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-mono">
       <header className="border-b border-zinc-800 px-4 py-3">
@@ -599,7 +611,7 @@ function App() {
             <h2 className="text-sm font-medium">Peers</h2>
             <button
               type="button"
-              onClick={() => openQrModal('host')}
+              onClick={handleOpenHostQr}
               disabled={!isOnline}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-600 hover:border-zinc-500 text-zinc-300 hover:text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
