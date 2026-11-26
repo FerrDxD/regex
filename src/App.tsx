@@ -20,6 +20,8 @@ import { QrPairingModal } from './components/QrPairingModal';
 import { TransferSheet } from './components/TransferSheet';
 import { InstantTextBox } from './components/InstantTextBox';
 import { DragDropOverlay } from './components/DragDropOverlay';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { PwaInstallPrompt } from './components/PwaInstallPrompt';
 import { useSessionStore } from './store/useSessionStore';
 
 const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'ws://localhost:8080/signaling';
@@ -46,6 +48,7 @@ function App() {
   const closeQrModal = useSessionStore((state) => state.closeQrModal);
   const setDragDropActive = useSessionStore((state) => state.setDragDropActive);
   const setClipboardText = useSessionStore((state) => state.setClipboardText);
+  const isOnline = useSessionStore((state) => state.isOnline);
 
   // WebRTC
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -567,9 +570,16 @@ function App() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-mono">
       <header className="border-b border-zinc-800 px-4 py-3">
-        <h1 className="text-lg font-medium">Regex</h1>
-        <p className="text-xs text-zinc-500">P2P File Transfer</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-medium">Regex</h1>
+            <p className="text-xs text-zinc-500">P2P File Transfer</p>
+          </div>
+          <OfflineIndicator />
+        </div>
       </header>
+
+      <PwaInstallPrompt />
 
       <main className="p-4 space-y-4 max-w-3xl mx-auto pb-32">
         {/* Connection Status */}
@@ -590,7 +600,8 @@ function App() {
             <button
               type="button"
               onClick={() => openQrModal('host')}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-600 hover:border-zinc-500 text-zinc-300 hover:text-zinc-100 transition-colors"
+              disabled={!isOnline}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-600 hover:border-zinc-500 text-zinc-300 hover:text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <QrCode size={14} />
               <span>Pair</span>
