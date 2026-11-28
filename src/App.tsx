@@ -76,7 +76,7 @@ function App() {
     deviceType: 'desktop',
     os: navigator.platform,
     browser: navigator.userAgent.slice(0, 50),
-    ipHash: 'local',
+    ipHash: '',
     joinedAt: Date.now(),
   }), []);
 
@@ -100,6 +100,9 @@ function App() {
   // True while WE initiated the outbound WebRPC connection. Prevents the
   // selectedPeerId useEffect from re-initiating on the callee side.
   const isInitiatorRef = useRef(false);
+  // Tracks ICE restart attempts to avoid infinite reconnect loops.
+  const iceRestartAttemptsRef = useRef(0);
+  const MAX_ICE_RESTART_ATTEMPTS = 3;
 
   // Initialize signaling client
   useEffect(() => {
@@ -183,6 +186,36 @@ function App() {
     pendingIceCandidatesRef.current = [];
   }, []);
 
+  // Attempt ICE restart on failure, fall back to full re-initiate if exhausted.
+  const handleIceConnectionFailed = useCallback(async () => {
+    const pc = pcRef.current;
+    if (!pc) return;
+    if (iceRestartAttemptsRef.current >= MAX_ICE_RESTART_ATTEMPTS) {
+      console.error('ICE restart attempts exhausted');
+      setConnectionStatus('error');
+      return;
+    }
+    iceRestartAttemptsRef.current += 1;
+    console.log(`ICE connection failed, attempting restart (${iceRestartAttemptsRef.current}/${MAX_ICE_RESTART_ATTEMPTS})`);
+    try {
+      await pc.restartIce();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await flushPendingIceCandidates();
+      if (selectedPeerId && signalingClientRef.current) {
+        signalingClientRef.current.send({
+          type: 'SIGNAL',
+          targetId: selectedPeerId,
+          senderId: localPeerInfo.peerId,
+          signal: pc.localDescription!,
+        });
+      }
+    } catch (err) {
+      console.error('ICE restart failed:', err);
+      // Fall through to let the caller re-initiate via cleanupWebRTC + initiateConnection
+    }
+  }, [selectedPeerId, localPeerInfo.peerId, flushPendingIceCandidates]);
+
   // Handle incoming WebRTC signal (SDP offer/answer or ICE candidate)
   const handleIncomingSignal = useCallback(async (signal: RTCSessionDescriptionInit | RTCIceCandidateInit) => {
     let pc = pcRef.current;
@@ -207,6 +240,9 @@ function App() {
         },
         onIceConnectionStateChange: (state) => {
           console.log('ICE state:', state);
+          if (state === 'failed') {
+            void handleIceConnectionFailed();
+          }
         },
         onError: (err) => {
           console.error('WebRTC error:', err);
@@ -215,9 +251,8 @@ function App() {
 
       pc = createPeerConnection(undefined, callbacks);
       pcRef.current = pc;
-
-      const channel = createDataChannel(pc, 'file-transfer');
-      setupDataChannel(channel);
+      // Callee: do NOT create a data channel explicitly. The remote channel
+      // arrives via the onDataChannel callback above (Finding 5).
     }
 
     if (!pc) return;
@@ -281,6 +316,9 @@ function App() {
       },
       onIceConnectionStateChange: (state) => {
         console.log('ICE state:', state);
+        if (state === 'failed') {
+          void handleIceConnectionFailed();
+        }
       },
       onError: (err) => {
         console.error('WebRTC error:', err);
@@ -315,12 +353,14 @@ function App() {
     channel.onopen = () => {
       console.log('Data channel open');
       setConnectionStatus('connected');
+      dataChannelOpenRef();
     };
 
     channel.onclose = () => {
       console.log('Data channel closed');
       dataChannelRef.current = null;
       setConnectionStatus('searching');
+      dataChannelCloseRef();
     };
 
     channel.onerror = (err) => {
@@ -468,11 +508,22 @@ function App() {
     handleResetTransferState();
   }, [setSelectedPeer, handleResetTransferState]);
 
+  // True only when the data channel exists and is fully open — prevents
+  // sending control messages / file chunks on a channel that is still
+  // handshaking or already closed (Finding 7).
+  const isDataChannelReady = useRef(false);
+  const dataChannelOpenRef = useCallback(() => {
+    isDataChannelReady.current = true;
+  }, []);
+  const dataChannelCloseRef = useCallback(() => {
+    isDataChannelReady.current = false;
+  }, []);
+
   // Send file handler
   const handleSendFile = useCallback(() => {
     const fileInput = document.getElementById('file-input') as HTMLInputElement;
     const file = fileInput?.files?.[0];
-    if (!file || !selectedPeerId || !dataChannelRef.current) return;
+    if (!file || !selectedPeerId || !dataChannelRef.current || !isDataChannelReady.current) return;
 
     const fileId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const fileMeta: FileMeta = {
@@ -498,7 +549,7 @@ function App() {
 
   // Handle file drop from DragDropOverlay
   const handleDrop = useCallback((files: File[]) => {
-    if (files.length === 0 || !selectedPeerId || !dataChannelRef.current) return;
+    if (files.length === 0 || !selectedPeerId || !dataChannelRef.current || !isDataChannelReady.current) return;
     const file = files[0];
 
     const fileId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -526,7 +577,7 @@ function App() {
 
   // Handle text send from InstantTextBox
   const handleSendText = useCallback((text: string) => {
-    if (!selectedPeerId || !dataChannelRef.current) return;
+    if (!selectedPeerId || !dataChannelRef.current || !isDataChannelReady.current) return;
     const textMsg = createTextDrop(text, localPeerInfo.peerId);
     sendControlMessage(dataChannelRef.current, textMsg);
   }, [selectedPeerId, localPeerInfo.peerId]);
@@ -534,7 +585,7 @@ function App() {
   // TransferSheet handlers
   const handleTransferSheetAccept = useCallback(() => {
     // Called when user clicks "Accept" on incoming transfer
-    if (!transferState || transferState.direction !== 'receiving' || !transferState.fileId || !dataChannelRef.current) return;
+    if (!transferState || transferState.direction !== 'receiving' || !transferState.fileId || !dataChannelRef.current || !isDataChannelReady.current) return;
     const acceptMsg = createTransferAccept(transferState.fileId, localPeerInfo.peerId);
     sendControlMessage(dataChannelRef.current, acceptMsg);
 
@@ -565,7 +616,7 @@ function App() {
 
   const handleTransferSheetDecline = useCallback(() => {
     // Called when user clicks "Decline" on incoming transfer
-    if (!transferState || transferState.direction !== 'receiving' || !transferState.fileId || !dataChannelRef.current) return;
+    if (!transferState || transferState.direction !== 'receiving' || !transferState.fileId || !dataChannelRef.current || !isDataChannelReady.current) return;
     const declineMsg = createTransferDecline(transferState.fileId, localPeerInfo.peerId);
     sendControlMessage(dataChannelRef.current, declineMsg);
     handleResetTransferState();
