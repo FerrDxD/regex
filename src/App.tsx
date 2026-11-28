@@ -24,7 +24,13 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { PwaInstallPrompt } from './components/PwaInstallPrompt';
 import { useSessionStore } from './store/useSessionStore';
 
-const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'ws://localhost:8080/signaling';
+const SIGNALING_URL =
+  import.meta.env.VITE_SIGNALING_URL ??
+  (() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    return `${protocol}//${host}/signaling`;
+  })();
 
 function App() {
   // Signaling
@@ -87,6 +93,13 @@ function App() {
   // Handler refs for signaling (to avoid stale closures) - use mutable object wrapper
   const handleSignalingMessageRef = useRef<{ current: ((msg: SignalingMessage) => void) | null }>({ current: null });
   const handleIncomingSignalRef = useRef<{ current: ((signal: RTCSessionDescriptionInit | RTCIceCandidateInit) => Promise<void>) | null }>({ current: null });
+  // Tracks the peerId of an incoming signal that is being processed, so the
+  // useEffect that initiates outbound connections does not clobber an inbound
+  // WebRTC handshake that is already in flight.
+  const incomingPeerRef = useRef<string | null>(null);
+  // True while WE initiated the outbound WebRPC connection. Prevents the
+  // selectedPeerId useEffect from re-initiating on the callee side.
+  const isInitiatorRef = useRef(false);
 
   // Initialize signaling client
   useEffect(() => {
@@ -139,12 +152,12 @@ function App() {
         }
         break;
       case 'SIGNAL':
-        // Auto-select the sender if no peer is selected yet (initial connection setup)
-        if (selectedPeerId === null && _msg.senderId !== localPeerInfo.peerId) {
-          setSelectedPeer(_msg.senderId);
-        }
-        if (_msg.senderId === selectedPeerId) {
+        if (_msg.senderId !== localPeerInfo.peerId) {
+          incomingPeerRef.current = _msg.senderId;
           handleIncomingSignalRef.current.current?.(_msg.signal);
+        }
+        if (selectedPeerId !== _msg.senderId) {
+          setSelectedPeer(_msg.senderId);
         }
         break;
       case 'ERROR':
@@ -245,6 +258,8 @@ function App() {
       cleanupWebRTC();
     }
 
+    isInitiatorRef.current = true;
+    incomingPeerRef.current = null;
     setSelectedPeer(peerId);
     setConnectionStatus('handshaking');
 
@@ -418,9 +433,14 @@ function App() {
 
   // Initiate WebRTC connection when selectedPeerId changes
   useEffect(() => {
-    if (selectedPeerId) {
-      initiateConnection(selectedPeerId);
+    if (!selectedPeerId) return;
+    // If we are the callee (incomingPeerRef set) and we did not initiate,
+    // do not start an outbound connection — the inbound handshake is in flight.
+    if (incomingPeerRef.current === selectedPeerId && !isInitiatorRef.current) {
+      incomingPeerRef.current = null;
+      return;
     }
+    initiateConnection(selectedPeerId);
   }, [selectedPeerId, initiateConnection]);
 
   // Clean up WebRTC connection
@@ -442,6 +462,8 @@ function App() {
     }
     pcStateRef.current = 'new';
     pendingIceCandidatesRef.current = [];
+    isInitiatorRef.current = false;
+    incomingPeerRef.current = null;
     setSelectedPeer(null);
     handleResetTransferState();
   }, [setSelectedPeer, handleResetTransferState]);
